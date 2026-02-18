@@ -2,8 +2,18 @@
 session_start();
 require '../db.php';
 
-// Получаем данные (Сортировка: новые сверху)
-$stmt = $pdo->query("SELECT * FROM products ORDER BY id DESC");
+// Пагинация
+$page = isset($_GET['page']) ? (int)$_GET['page'] : 1;
+$limit = 10;
+$offset = ($page - 1) * $limit;
+
+// Получаем общее кол-во товаров (для кнопок 1, 2, 3...)
+$total_stmt = $pdo->query("SELECT COUNT(*) FROM products");
+$total_rows = $total_stmt->fetchColumn();
+$total_pages = ceil($total_rows / $limit);
+
+// Получаем данные с пагинацией
+$stmt = $pdo->query("SELECT * FROM products ORDER BY id DESC LIMIT $limit OFFSET $offset");
 $products = $stmt->fetchAll();
 ?>
 
@@ -35,16 +45,41 @@ $products = $stmt->fetchAll();
         <?php foreach ($products as $p): ?>
             <div class="col-md-4 mb-4">
                 <div class="card h-100">
-                    <img src="<?= htmlspecialchars($p['image_url'] ?: 'https://via.placeholder.com/300') ?>" class="card-img-top" style="height: 200px; object-fit: cover;">
+                    <img src="<?= htmlspecialchars($p['image_url'] ?: 'https://via.placeholder.com/300') ?>" class="card-img-top" style="height: 200px; object-fit: cover;" alt="<?= h($p['title']) ?>">
                     <div class="card-body">
                         <h5 class="card-title"><?= h($p['title']) ?></h5>
                         <p class="card-text"><?= h($p['descriptions']) ?></p>
                         <p class="text-primary fw-bold"><?= $p['price'] ?> ₽</p>
-                        <a href="make_order.php?id=<?= $p['id'] ?>" class="btn btn-primary">Купить</a>
+                        <div class="d-flex gap-2 align-items-center">
+                            <a href="make_order.php?id=<?= $p['id'] ?>" class="btn btn-primary">Купить</a>
+                            <?php if ($_SESSION['user_role'] === 'admin'): ?>
+                                <a href="edit_item.php?id=<?= $p['id'] ?>" class="btn btn-warning">✏️</a>
+                            <?php endif; ?>
+                            <form action="delete_item.php" method="POST" onsubmit="return confirm('Вы уверены?');" class="m-0">
+                                <input type="hidden" name="id" value="<?= $p['id'] ?>">
+                                <input type="hidden" name="base" value="products">
+                                <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token']?>">
+                                <?php if ($_SESSION['user_role'] === 'admin'): ?>
+                                    <button type="submit" class="btn btn-danger btn-sm">🗑️ Удалить</button>
+                                <?php endif; ?>
+                            </form>
+                        </div>
                     </div>
+                </div>
             </div>
         <?php endforeach; ?>
     </div>
 </div>
+<?php if ($total_pages > 1): ?>
+<nav class="mt-4">
+  <ul class="pagination justify-content-center">
+    <?php for ($i = 1; $i <= $total_pages; $i++): ?>
+      <li class="page-item <?= ($i == $page) ? 'active' : '' ?>">
+        <a class="page-link" href="?page=<?= $i ?>"><?= $i ?></a>
+      </li>
+    <?php endfor; ?>
+  </ul>
+</nav>
+<?php endif; ?>
 </body>
 </html>

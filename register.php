@@ -12,9 +12,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email = trim($_POST['email']);
     $pass = $_POST['password'];
     $passConfirm = $_POST['password_confirm'];
+    $name = $_POST['name'];
+    $last_name = $_POST['last_name'];
+    $phone =  $_POST['phone'];
 
     // 3. Валидация (Проверки)
-    if (empty($email) || empty($pass)) {
+    if (empty($email) || empty($pass) || empty($name) || empty($last_name)|| empty($phone)){
         $errorMsg = "Заполните все поля!";
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $errorMsg = "Некорректный формат Email!";
@@ -27,13 +30,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $hash = password_hash($pass, PASSWORD_DEFAULT);
 
         // Готовим SQL-запрос (Защита от SQL Injection)
-        $sql = "INSERT INTO users (email, password_hash, role) VALUES (:email, :hash, 'client')";
+        $sql = "INSERT INTO users (email, password_hash, role, last_name, first_name, phone) VALUES (:email, :hash, 'client', :last_name, :name, :phone)";
         $stmt = $pdo->prepare($sql);
 
         try {
             $stmt->execute([
                 ':email' => $email,
-                ':hash' => $hash
+                ':hash' => $hash,
+                ':last_name' => $last_name,
+                ':name' => $name,
+                ':phone' => $phone,
             ]);
             $successMsg = "Регистрация успешна! <a href='login.php'>Войти</a>";
         } catch (PDOException $e) {
@@ -80,6 +86,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <div class="mb-3">
                             <label class="form-label">Email адрес</label>
                             <input type="email" name="email" class="form-control" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Имя</label>
+                            <input type="text" name="name" class="form-control" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Фамилия</label>
+                            <input type="text" name="last_name" class="form-control" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Телефон</label>
+                            <input type="tel" name="phone" class="form-control" required>
                         </div>
                         <div class="mb-3">
                             <label class="form-label">Пароль</label>
