@@ -412,8 +412,8 @@ if (isset($_SESSION['user_id'])) {
                         <div class="mb-4">
                             <label class="form-label">Дата записи *</label>
                             <input type="date" name="booking_date" id="booking_date" class="form-control rounded-pill" 
-                                   value="<?= $selected_date ?>" 
-                                   min="<?= h(date('Y-m-d')) ?>"
+                                   value="<?= h($selected_date) ?>" 
+                                   min="<?= date('Y-m-d') ?>"
                                    onchange="onDateChange()"
                                    required>
                         </div>
