@@ -4,7 +4,7 @@ ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 
 session_start();
-require 'db.php';
+require_once 'db.php';
 
 $service_id = isset($_GET['service_id']) ? (int)$_GET['service_id'] : (isset($_POST['service_id']) ? (int)$_POST['service_id'] : 0);
 $master_id = isset($_GET['master_id']) ? (int)$_GET['master_id'] : (isset($_POST['master_id']) ? (int)$_POST['master_id'] : 0);
