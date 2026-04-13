@@ -4,7 +4,7 @@ ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 
 session_start();
-require_once 'db.php';
+require 'db.php';
 
 $service_id = isset($_GET['service_id']) ? (int)$_GET['service_id'] : (isset($_POST['service_id']) ? (int)$_POST['service_id'] : 0);
 $master_id = isset($_GET['master_id']) ? (int)$_GET['master_id'] : (isset($_POST['master_id']) ? (int)$_POST['master_id'] : 0);
@@ -14,34 +14,102 @@ $selected_time = isset($_POST['booking_time']) ? $_POST['booking_time'] : '';
 $error = '';
 $success = '';
 
+// AJAX запрос: получаем занятые слоты для выбранного мастера и даты
 if (isset($_GET['ajax']) && $_GET['ajax'] == 'get_booked_slots') {
     header('Content-Type: application/json');
     $master_id_ajax = (int)$_GET['master_id'];
     $date_ajax = $_GET['date'];
+    $duration_ajax = isset($_GET['duration']) ? (int)$_GET['duration'] : 30;
     
-    $stmt = $pdo->prepare("SELECT booking_time FROM bookings WHERE master_id = ? AND booking_date = ? AND status != 'cancelled'");
+    // Получаем все записи мастера на эту дату с длительностью услуг
+    $stmt = $pdo->prepare("
+        SELECT b.booking_time, s.duration 
+        FROM bookings b
+        JOIN services s ON b.service_id = s.id
+        WHERE b.master_id = ? AND b.booking_date = ? AND b.status != 'cancelled'
+    ");
     $stmt->execute([$master_id_ajax, $date_ajax]);
-    $bookedFromDB = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    $bookings = $stmt->fetchAll();
     
-    // Обрезаем секунды (было "09:00:00" -> стало "09:00")
-    $booked = [];
-    foreach ($bookedFromDB as $time) {
-        $booked[] = substr($time, 0, 5);
+    // Собираем все занятые интервалы
+    $blockedIntervals = [];
+    
+    foreach ($bookings as $booking) {
+        $startTime = $booking['booking_time'];
+        $duration = (int)$booking['duration'];
+        $endTime = date('H:i', strtotime($startTime) + ($duration * 60));
+        
+        $blockedIntervals[] = [
+            'start' => $startTime,
+            'end' => $endTime
+        ];
     }
     
-    echo json_encode(['booked_slots' => $booked]);
+    // Генерируем все возможные слоты времени
+    $allTimeSlots = [];
+    $start = strtotime('09:00');
+    $end = strtotime('19:00');
+    for ($time = $start; $time <= $end; $time += 1800) {
+        $allTimeSlots[] = date('H:i', $time);
+    }
+    
+    // Проверяем каждый слот на доступность с учетом длительности услуги
+    $availableSlots = [];
+    $slotsNeeded = ceil($duration_ajax / 30); // сколько 30-минутных слотов нужно
+    
+    foreach ($allTimeSlots as $slot) {
+        $slotStart = strtotime($slot);
+        $slotEnd = strtotime($slot) + ($duration_ajax * 60);
+        
+        // Проверяем, не выходит ли за время работы (до 19:00)
+        if ($slotEnd > strtotime('19:00')) {
+            continue;
+        }
+        
+        $isAvailable = true;
+        
+        // Проверяем пересечение с существующими записями
+        foreach ($blockedIntervals as $interval) {
+            $intervalStart = strtotime($interval['start']);
+            $intervalEnd = strtotime($interval['end']);
+            
+            // Если интервалы пересекаются
+            if ($slotStart < $intervalEnd && $slotEnd > $intervalStart) {
+                $isAvailable = false;
+                break;
+            }
+        }
+        
+        if ($isAvailable) {
+            $availableSlots[] = $slot;
+        }
+    }
+    
+    echo json_encode([
+        'available_slots' => $availableSlots,
+        'all_slots' => $allTimeSlots,
+        'blocked_intervals' => $blockedIntervals,
+        'duration' => $duration_ajax
+    ]);
     exit;
 }
 
+// Получаем выбранную услугу
 $service = null;
+$service_duration = 30;
 if ($service_id > 0) {
     $stmt = $pdo->prepare("SELECT * FROM services WHERE id = ?");
     $stmt->execute([$service_id]);
     $service = $stmt->fetch();
+    if ($service) {
+        $service_duration = $service['duration'];
+    }
 }
 
+// Получаем всех мастеров
 $masters = $pdo->query("SELECT * FROM masters WHERE is_active = 1 ORDER BY name")->fetchAll();
 
+// Генерация всех возможных слотов времени (9:00 - 19:00, шаг 30 мин)
 function getTimeSlots() {
     $slots = [];
     $start = strtotime('09:00');
@@ -53,6 +121,7 @@ function getTimeSlots() {
 }
 $allTimeSlots = getTimeSlots();
 
+// Обработка финальной отправки формы
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_booking'])) {
     if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== $_SESSION['csrf_token']) {
         $error = "Ошибка безопасности. Попробуйте еще раз.";
@@ -72,11 +141,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_booking'])) {
         } elseif (empty($service_id)) {
             $error = "Выберите услугу!";
         } else {
-            // Проверка, что слот не занят
-            $stmt = $pdo->prepare("SELECT id FROM bookings WHERE master_id = ? AND booking_date = ? AND booking_time = ? AND status != 'cancelled'");
-            $stmt->execute([$master_id, $booking_date, $booking_time]);
-            if ($stmt->fetch()) {
-                $error = "Это время уже занято. Выберите другое.";
+            // Получаем длительность выбранной услуги
+            $stmt = $pdo->prepare("SELECT duration FROM services WHERE id = ?");
+            $stmt->execute([$service_id]);
+            $currentDuration = (int)$stmt->fetchColumn();
+            
+            $newStartTime = strtotime($booking_time);
+            $newEndTime = $newStartTime + ($currentDuration * 60);
+            
+            // Получаем все записи мастера на эту дату
+            $stmt = $pdo->prepare("
+                SELECT b.booking_time, s.duration 
+                FROM bookings b
+                JOIN services s ON b.service_id = s.id
+                WHERE b.master_id = ? AND b.booking_date = ? AND b.status != 'cancelled'
+            ");
+            $stmt->execute([$master_id, $booking_date]);
+            $existingBookings = $stmt->fetchAll();
+            
+            $isConflict = false;
+            
+            foreach ($existingBookings as $existing) {
+                $existingStart = strtotime($existing['booking_time']);
+                $existingDuration = (int)$existing['duration'];
+                $existingEnd = $existingStart + ($existingDuration * 60);
+                
+                // Проверка на пересечение интервалов
+                if ($newStartTime < $existingEnd && $newEndTime > $existingStart) {
+                    $isConflict = true;
+                    break;
+                }
+            }
+            
+            // Проверка, что услуга помещается в рабочее время (до 19:00)
+            if ($newEndTime > strtotime('19:00')) {
+                $error = "Услуга не помещается в рабочее время (до 19:00). Выберите более раннее время.";
+            } elseif ($isConflict) {
+                $error = "Это время пересекается с другой записью. Выберите другое время.";
             } else {
                 $client_id = $_SESSION['user_id'] ?? null;
                 
@@ -94,6 +195,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_booking'])) {
     }
 }
 
+// Получаем данные пользователя для автоподстановки
 $user_name = '';
 $user_phone = '';
 $user_email = '';
@@ -121,6 +223,7 @@ if (isset($_SESSION['user_id'])) {
         body {
             background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
             min-height: 100vh;
+            padding-top: 70px;
         }
         
         .card {
@@ -154,7 +257,6 @@ if (isset($_SESSION['user_id'])) {
             border-radius: 10px;
         }
         
-        /* Карточки мастеров */
         .master-card {
             transition: all 0.2s ease;
             cursor: pointer;
@@ -171,7 +273,6 @@ if (isset($_SESSION['user_id'])) {
             background-color: #e8f5e9;
         }
         
-        /* Кнопки времени */
         .time-slot-btn {
             transition: all 0.2s ease;
             font-weight: 500;
@@ -196,12 +297,11 @@ if (isset($_SESSION['user_id'])) {
         }
         
         .time-slot-btn.booked {
-            background-color: #e9ecef !important;
-            border: 2px solid #dee2e6 !important;
-            color: #6c757d !important;
-            cursor: not-allowed !important;
+            background-color: #e9ecef;
+            border: 2px solid #dee2e6;
+            color: #6c757d;
+            cursor: not-allowed;
             text-decoration: line-through;
-            opacity: 0.8;
         }
         
         .time-slot-btn.selected {
@@ -253,40 +353,31 @@ if (isset($_SESSION['user_id'])) {
             padding: 6px 20px !important;
             font-weight: 500;
         }
-        
-        .debug-info {
-            font-size: 11px;
-            color: #666;
-            margin-top: 5px;
-        }
     </style>
 </head>
 <body>
-<nav class="navbar navbar-expand-lg bg-white shadow-sm">
+
+<nav class="navbar navbar-expand-lg bg-white shadow-sm fixed-top">
     <div class="container">
         <a class="navbar-brand fw-bold text-success" href="index.php">✂️ BARBERSHOP</a>
-        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-            <span class="navbar-toggler-icon"></span>
-        </button>
-        <div class="collapse navbar-collapse" id="navbarNav">
-            <ul class="navbar-nav ms-auto mb-2 mb-lg-0 align-items-center gap-2">
-                <?php if (isset($_SESSION['user_id'])): ?>
-                    <?php if ($_SESSION['user_role'] === 'admin'): ?>
-                        <li><a href="admin/admin_panel.php" class="btn btn-outline-danger btn-sm">Админка</a></li>
-                    <?php endif; ?>
-                    <?php if ($_SESSION['user_role'] === 'master'): ?>
-                        <li><a href="master_panel.php" class="btn btn-outline-info btn-sm">Панель мастера</a></li>
-                    <?php endif; ?>
-                    <li><a href="profile.php" class="btn btn-outline-primary btn-sm">Профиль</a></li>
-                    <li><a href="logout.php" class="btn btn-dark btn-sm">Выйти</a></li>
-                <?php else: ?>
-                    <li><a href="login.php" class="btn btn-success btn-sm">Войти</a></li>
-                    <li><a href="register.php" class="btn btn-outline-success btn-sm">Регистрация</a></li>
+        <div>
+            <?php if (isset($_SESSION['user_id'])): ?>
+                <?php if ($_SESSION['user_role'] === 'admin'): ?>
+                    <a href="admin/admin_panel.php" class="btn btn-outline-danger btn-sm header-btn">Админка</a>
                 <?php endif; ?>
-            </ul>
+                <?php if ($_SESSION['user_role'] === 'master'): ?>
+                    <a href="master_panel.php" class="btn btn-outline-info btn-sm header-btn">Панель мастера</a>
+                <?php endif; ?>
+                <a href="profile.php" class="btn btn-outline-primary btn-sm header-btn">Профиль</a>
+                <a href="logout.php" class="btn btn-dark btn-sm header-btn">Выйти</a>
+            <?php else: ?>
+                <a href="login.php" class="btn btn-success btn-sm header-btn">Войти</a>
+                <a href="register.php" class="btn btn-outline-success btn-sm header-btn">Регистрация</a>
+            <?php endif; ?>
         </div>
     </div>
 </nav>
+
 <div class="container py-4">
     
     <?php if ($success): ?>
@@ -300,6 +391,7 @@ if (isset($_SESSION['user_id'])) {
         </div>
     <?php else: ?>
     
+    <!-- Выбранная услуга -->
     <div class="card bg-white mb-4">
         <div class="card-body d-flex justify-content-between align-items-center flex-wrap">
             <div>
@@ -330,6 +422,7 @@ if (isset($_SESSION['user_id'])) {
         
         <div class="row g-4">
             
+            <!-- КОЛОНКА 1: МАСТЕРА -->
             <div class="col-md-4">
                 <div class="card h-100">
                     <div class="card-header bg-success text-white">
@@ -369,6 +462,7 @@ if (isset($_SESSION['user_id'])) {
                 </div>
             </div>
             
+            <!-- КОЛОНКА 2: ДАННЫЕ КЛИЕНТА -->
             <div class="col-md-4">
                 <div class="card h-100">
                     <div class="card-header bg-success text-white">
@@ -403,6 +497,7 @@ if (isset($_SESSION['user_id'])) {
                 </div>
             </div>
             
+            <!-- КОЛОНКА 3: ДАТА И ВРЕМЯ -->
             <div class="col-md-4">
                 <div class="card h-100">
                     <div class="card-header bg-success text-white">
@@ -412,7 +507,7 @@ if (isset($_SESSION['user_id'])) {
                         <div class="mb-4">
                             <label class="form-label">Дата записи *</label>
                             <input type="date" name="booking_date" id="booking_date" class="form-control rounded-pill" 
-                                   value="<?= h($selected_date) ?>" 
+                                   value="<?= $selected_date ?>" 
                                    min="<?= date('Y-m-d') ?>"
                                    onchange="onDateChange()"
                                    required>
@@ -421,6 +516,7 @@ if (isset($_SESSION['user_id'])) {
                         <div class="mb-3">
                             <label class="form-label">Время записи *</label>
                             <div id="timeSlotsContainer" class="row g-2">
+                                <div class="col-12 text-center py-4 text-muted">Выберите мастера и дату</div>
                             </div>
                             <div id="noMasterWarning" class="alert alert-warning small mt-3 <?= $master_id > 0 ? 'd-none' : '' ?>">
                                 <i class="fas fa-exclamation-triangle me-1"></i> Сначала выберите мастера
@@ -448,34 +544,41 @@ if (isset($_SESSION['user_id'])) {
 </div>
 
 <script>
+// Текущие значения
 let currentMasterId = <?= $master_id ?: 0 ?>;
-let currentDate = '<?= h($selected_date) ?>';
+let currentDate = '<?= $selected_date ?>';
 let currentSelectedTime = '';
+let currentServiceDuration = <?= $service_duration ?>;
 
-const allTimeSlots = <?= json_encode($allTimeSlots) ?>;
-
-async function getBookedSlots(masterId, date) {
+// Функция: получаем доступные слоты для мастера и даты
+async function getAvailableSlots(masterId, date, duration) {
     if (!masterId || !date) return [];
     
     try {
-        const response = await fetch(`booking.php?ajax=get_booked_slots&master_id=${masterId}&date=${date}`);
+        const response = await fetch(`booking.php?ajax=get_booked_slots&master_id=${masterId}&date=${date}&duration=${duration}`);
+        
+        if (!response.ok) {
+            console.error('HTTP ошибка:', response.status);
+            return [];
+        }
+        
         const data = await response.json();
+        console.log('Доступные слоты:', data.available_slots);
+        console.log('Длительность услуги:', data.duration);
         
-        const normalizedSlots = (data.booked_slots || []).map(slot => slot.substring(0, 5));
-        
-        console.log('✅ Занятые слоты для мастера', masterId, 'на дату', date, ':', normalizedSlots);
-        return normalizedSlots;
+        return data.available_slots || [];
     } catch (error) {
-        console.error('❌ Ошибка:', error);
+        console.error('Ошибка:', error);
         return [];
     }
 }
 
+// Функция: создаем ячейки времени на основе доступных слотов
 async function renderTimeSlots() {
     const container = document.getElementById('timeSlotsContainer');
     const warning = document.getElementById('noMasterWarning');
     const loading = document.getElementById('loadingIndicator');
-
+    
     if (!currentMasterId) {
         container.innerHTML = '<div class="col-12 text-center py-4 text-muted">👈 Выберите мастера</div>';
         warning.classList.remove('d-none');
@@ -485,26 +588,34 @@ async function renderTimeSlots() {
     warning.classList.add('d-none');
     loading.classList.remove('d-none');
     
-    const bookedSlots = await getBookedSlots(currentMasterId, currentDate);
+    // Запрашиваем доступные слоты с учетом длительности услуги
+    const availableSlots = await getAvailableSlots(currentMasterId, currentDate, currentServiceDuration);
     
     loading.classList.add('d-none');
     container.innerHTML = '';
     
-    let bookedCount = 0;
+    if (availableSlots.length === 0) {
+        container.innerHTML = '<div class="col-12 text-center py-4 text-warning">⚠️ Нет доступного времени для выбранной услуги</div>';
+        return;
+    }
     
-    allTimeSlots.forEach(slot => {
-        const isBooked = bookedSlots.includes(slot);
-        if (isBooked) bookedCount++;
-        
+    // Все возможные слоты для отображения
+    const allSlots = <?= json_encode($allTimeSlots) ?>;
+    
+    allSlots.forEach(slot => {
+        const isAvailable = availableSlots.includes(slot);
         const isSelected = currentSelectedTime === slot;
         
         let btnClass = 'time-slot-btn ';
-        if (isBooked) {
-            btnClass += 'booked'; 
+        let isDisabled = false;
+        
+        if (!isAvailable) {
+            btnClass += 'booked';
+            isDisabled = true;
         } else if (isSelected) {
-            btnClass += 'selected'; 
+            btnClass += 'selected';
         } else {
-            btnClass += 'available'; 
+            btnClass += 'available';
         }
         
         const colDiv = document.createElement('div');
@@ -515,10 +626,10 @@ async function renderTimeSlots() {
         button.className = btnClass;
         button.textContent = slot;
         
-        if (isBooked) {
+        if (isDisabled) {
             button.disabled = true;
             button.innerHTML = slot + ' <i class="fas fa-lock"></i>';
-            button.title = 'Это время уже занято';
+            button.title = 'Это время недоступно (занято или не хватает времени)';
         } else {
             button.onclick = () => selectTime(slot);
         }
@@ -527,20 +638,15 @@ async function renderTimeSlots() {
         container.appendChild(colDiv);
     });
     
-    const debugInfo = document.createElement('div');
-    debugInfo.className = 'debug-info text-center mt-2';
-    debugInfo.innerHTML = `📊 Занятых слотов: ${bookedCount} из ${allTimeSlots.length}`;
-    container.appendChild(debugInfo);
-    
-    console.log(`📊 Создано ${allTimeSlots.length} ячеек, из них занято: ${bookedCount}`);
-    
     updateSubmitButton();
 }
 
+// Выбор времени
 function selectTime(time) {
     currentSelectedTime = time;
     document.getElementById('selected_time').value = time;
     
+    // Обновляем классы кнопок
     document.querySelectorAll('#timeSlotsContainer .time-slot-btn').forEach(btn => {
         const btnTime = btn.textContent.trim().replace(' 🔒', '');
         if (!btn.disabled) {
@@ -555,6 +661,7 @@ function selectTime(time) {
     updateSubmitButton();
 }
 
+// Обновление кнопки отправки
 function updateSubmitButton() {
     const submitBtn = document.getElementById('submitBtn');
     const hasService = <?= $service_id ? 1 : 0 ?>;
@@ -565,6 +672,7 @@ function updateSubmitButton() {
     submitBtn.disabled = !(hasService && hasMaster && hasDate && hasTime);
 }
 
+// Смена мастера
 function onMasterChange(masterId) {
     currentMasterId = parseInt(masterId);
     currentSelectedTime = '';
@@ -572,6 +680,7 @@ function onMasterChange(masterId) {
     renderTimeSlots();
 }
 
+// Смена даты
 function onDateChange() {
     const dateInput = document.getElementById('booking_date');
     currentDate = dateInput.value;
@@ -580,14 +689,12 @@ function onDateChange() {
     renderTimeSlots();
 }
 
+// Инициализация
 document.addEventListener('DOMContentLoaded', function() {
-    console.log('🚀 Страница загружена. Мастер:', currentMasterId, 'Дата:', currentDate);
+    console.log('Страница загружена. Мастер:', currentMasterId, 'Дата:', currentDate);
     
     if (currentMasterId > 0 && currentDate) {
         renderTimeSlots();
-    } else if (currentMasterId > 0) {
-        document.getElementById('timeSlotsContainer').innerHTML = 
-            '<div class="col-12 text-center py-4 text-muted">📅 Выберите дату</div>';
     }
 });
 </script>
