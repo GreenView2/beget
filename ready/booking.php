@@ -524,7 +524,7 @@ if (isset($_SESSION['user_id'])) {
 
 <script>
 let currentMasterId = <?= $master_id ?: 0 ?>;
-let currentDate = '<?= $selected_date ?>';
+let currentDate = '<?= h($selected_date) ?>';
 let currentSelectedTime = '';
 let currentServiceDuration = <?= $service_duration ?>;
 
