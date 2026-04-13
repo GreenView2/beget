@@ -14,14 +14,12 @@ $selected_time = isset($_POST['booking_time']) ? $_POST['booking_time'] : '';
 $error = '';
 $success = '';
 
-// AJAX запрос: получаем занятые слоты для выбранного мастера и даты
 if (isset($_GET['ajax']) && $_GET['ajax'] == 'get_booked_slots') {
     header('Content-Type: application/json');
     $master_id_ajax = (int)$_GET['master_id'];
     $date_ajax = $_GET['date'];
     $duration_ajax = isset($_GET['duration']) ? (int)$_GET['duration'] : 30;
     
-    // Получаем все записи мастера на эту дату с длительностью услуг
     $stmt = $pdo->prepare("
         SELECT b.booking_time, s.duration 
         FROM bookings b
@@ -31,7 +29,6 @@ if (isset($_GET['ajax']) && $_GET['ajax'] == 'get_booked_slots') {
     $stmt->execute([$master_id_ajax, $date_ajax]);
     $bookings = $stmt->fetchAll();
     
-    // Собираем все занятые интервалы
     $blockedIntervals = [];
     
     foreach ($bookings as $booking) {
@@ -45,7 +42,6 @@ if (isset($_GET['ajax']) && $_GET['ajax'] == 'get_booked_slots') {
         ];
     }
     
-    // Генерируем все возможные слоты времени
     $allTimeSlots = [];
     $start = strtotime('09:00');
     $end = strtotime('19:00');
@@ -53,27 +49,23 @@ if (isset($_GET['ajax']) && $_GET['ajax'] == 'get_booked_slots') {
         $allTimeSlots[] = date('H:i', $time);
     }
     
-    // Проверяем каждый слот на доступность с учетом длительности услуги
     $availableSlots = [];
-    $slotsNeeded = ceil($duration_ajax / 30); // сколько 30-минутных слотов нужно
+    $slotsNeeded = ceil($duration_ajax / 30);
     
     foreach ($allTimeSlots as $slot) {
         $slotStart = strtotime($slot);
         $slotEnd = strtotime($slot) + ($duration_ajax * 60);
         
-        // Проверяем, не выходит ли за время работы (до 19:00)
         if ($slotEnd > strtotime('19:00')) {
             continue;
         }
         
         $isAvailable = true;
         
-        // Проверяем пересечение с существующими записями
         foreach ($blockedIntervals as $interval) {
             $intervalStart = strtotime($interval['start']);
             $intervalEnd = strtotime($interval['end']);
             
-            // Если интервалы пересекаются
             if ($slotStart < $intervalEnd && $slotEnd > $intervalStart) {
                 $isAvailable = false;
                 break;
@@ -94,7 +86,6 @@ if (isset($_GET['ajax']) && $_GET['ajax'] == 'get_booked_slots') {
     exit;
 }
 
-// Получаем выбранную услугу
 $service = null;
 $service_duration = 30;
 if ($service_id > 0) {
@@ -106,10 +97,8 @@ if ($service_id > 0) {
     }
 }
 
-// Получаем всех мастеров
 $masters = $pdo->query("SELECT * FROM masters WHERE is_active = 1 ORDER BY name")->fetchAll();
 
-// Генерация всех возможных слотов времени (9:00 - 19:00, шаг 30 мин)
 function getTimeSlots() {
     $slots = [];
     $start = strtotime('09:00');
@@ -121,7 +110,6 @@ function getTimeSlots() {
 }
 $allTimeSlots = getTimeSlots();
 
-// Обработка финальной отправки формы
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_booking'])) {
     if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== $_SESSION['csrf_token']) {
         $error = "Ошибка безопасности. Попробуйте еще раз.";
@@ -141,7 +129,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_booking'])) {
         } elseif (empty($service_id)) {
             $error = "Выберите услугу!";
         } else {
-            // Получаем длительность выбранной услуги
             $stmt = $pdo->prepare("SELECT duration FROM services WHERE id = ?");
             $stmt->execute([$service_id]);
             $currentDuration = (int)$stmt->fetchColumn();
@@ -149,7 +136,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_booking'])) {
             $newStartTime = strtotime($booking_time);
             $newEndTime = $newStartTime + ($currentDuration * 60);
             
-            // Получаем все записи мастера на эту дату
             $stmt = $pdo->prepare("
                 SELECT b.booking_time, s.duration 
                 FROM bookings b
@@ -166,14 +152,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_booking'])) {
                 $existingDuration = (int)$existing['duration'];
                 $existingEnd = $existingStart + ($existingDuration * 60);
                 
-                // Проверка на пересечение интервалов
                 if ($newStartTime < $existingEnd && $newEndTime > $existingStart) {
                     $isConflict = true;
                     break;
                 }
             }
             
-            // Проверка, что услуга помещается в рабочее время (до 19:00)
             if ($newEndTime > strtotime('19:00')) {
                 $error = "Услуга не помещается в рабочее время (до 19:00). Выберите более раннее время.";
             } elseif ($isConflict) {
@@ -195,7 +179,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_booking'])) {
     }
 }
 
-// Получаем данные пользователя для автоподстановки
 $user_name = '';
 $user_phone = '';
 $user_email = '';
@@ -390,8 +373,7 @@ if (isset($_SESSION['user_id'])) {
             </div>
         </div>
     <?php else: ?>
-    
-    <!-- Выбранная услуга -->
+
     <div class="card bg-white mb-4">
         <div class="card-body d-flex justify-content-between align-items-center flex-wrap">
             <div>
@@ -422,7 +404,6 @@ if (isset($_SESSION['user_id'])) {
         
         <div class="row g-4">
             
-            <!-- КОЛОНКА 1: МАСТЕРА -->
             <div class="col-md-4">
                 <div class="card h-100">
                     <div class="card-header bg-success text-white">
@@ -462,7 +443,6 @@ if (isset($_SESSION['user_id'])) {
                 </div>
             </div>
             
-            <!-- КОЛОНКА 2: ДАННЫЕ КЛИЕНТА -->
             <div class="col-md-4">
                 <div class="card h-100">
                     <div class="card-header bg-success text-white">
@@ -497,7 +477,6 @@ if (isset($_SESSION['user_id'])) {
                 </div>
             </div>
             
-            <!-- КОЛОНКА 3: ДАТА И ВРЕМЯ -->
             <div class="col-md-4">
                 <div class="card h-100">
                     <div class="card-header bg-success text-white">
@@ -544,13 +523,11 @@ if (isset($_SESSION['user_id'])) {
 </div>
 
 <script>
-// Текущие значения
 let currentMasterId = <?= $master_id ?: 0 ?>;
 let currentDate = '<?= $selected_date ?>';
 let currentSelectedTime = '';
 let currentServiceDuration = <?= $service_duration ?>;
 
-// Функция: получаем доступные слоты для мастера и даты
 async function getAvailableSlots(masterId, date, duration) {
     if (!masterId || !date) return [];
     
@@ -573,7 +550,6 @@ async function getAvailableSlots(masterId, date, duration) {
     }
 }
 
-// Функция: создаем ячейки времени на основе доступных слотов
 async function renderTimeSlots() {
     const container = document.getElementById('timeSlotsContainer');
     const warning = document.getElementById('noMasterWarning');
@@ -588,7 +564,6 @@ async function renderTimeSlots() {
     warning.classList.add('d-none');
     loading.classList.remove('d-none');
     
-    // Запрашиваем доступные слоты с учетом длительности услуги
     const availableSlots = await getAvailableSlots(currentMasterId, currentDate, currentServiceDuration);
     
     loading.classList.add('d-none');
@@ -599,7 +574,6 @@ async function renderTimeSlots() {
         return;
     }
     
-    // Все возможные слоты для отображения
     const allSlots = <?= json_encode($allTimeSlots) ?>;
     
     allSlots.forEach(slot => {
@@ -641,12 +615,10 @@ async function renderTimeSlots() {
     updateSubmitButton();
 }
 
-// Выбор времени
 function selectTime(time) {
     currentSelectedTime = time;
     document.getElementById('selected_time').value = time;
     
-    // Обновляем классы кнопок
     document.querySelectorAll('#timeSlotsContainer .time-slot-btn').forEach(btn => {
         const btnTime = btn.textContent.trim().replace(' 🔒', '');
         if (!btn.disabled) {
@@ -661,7 +633,6 @@ function selectTime(time) {
     updateSubmitButton();
 }
 
-// Обновление кнопки отправки
 function updateSubmitButton() {
     const submitBtn = document.getElementById('submitBtn');
     const hasService = <?= $service_id ? 1 : 0 ?>;
@@ -672,7 +643,6 @@ function updateSubmitButton() {
     submitBtn.disabled = !(hasService && hasMaster && hasDate && hasTime);
 }
 
-// Смена мастера
 function onMasterChange(masterId) {
     currentMasterId = parseInt(masterId);
     currentSelectedTime = '';
@@ -680,7 +650,6 @@ function onMasterChange(masterId) {
     renderTimeSlots();
 }
 
-// Смена даты
 function onDateChange() {
     const dateInput = document.getElementById('booking_date');
     currentDate = dateInput.value;
@@ -689,7 +658,6 @@ function onDateChange() {
     renderTimeSlots();
 }
 
-// Инициализация
 document.addEventListener('DOMContentLoaded', function() {
     console.log('Страница загружена. Мастер:', currentMasterId, 'Дата:', currentDate);
     
